@@ -148,42 +148,45 @@ expose.getCredentialsForIdentity = async function(identityPoolId, provider, toke
 	return new Promise((success, failure) => {
 		var cognito = new aws.CognitoIdentity({region: identityPoolId.split(':')[0]});
 
-		var providers = {
-			"google": "accounts.google.com",
-			"facebook": "graph.facebook.com",
-			"amazon": "www.amazon.com",
-			"twitter": "api.twitter.com",
-			"digits": "www.digits.com"
-		};
-
 		var region = identityPoolId.split(':')[0];
-
-		if (!providers.hasOwnProperty(provider)) {
-			console.log("provider must be one of [" + Object.keys(providers).join(', ') + "]");
-			return false;
-		}
 
 		cognito.getId({
 			IdentityPoolId: identityPoolId,
 			Logins: {
-				[providers[provider]]: token
+				[provider]: token
 			}
 		}, function(err, data) {
 			if (err) {
 				return failure("Unable to get Identity ID: " + err);
 			}
 
-			console.log(data);
-
 			cognito.getCredentialsForIdentity({
 				IdentityId: data.IdentityId,
 				Logins: {
-					[providers[provider]]: token
+					[provider]: token
 				}
 			}, function(err, data) {
 				if (err) {
 					return failure("Unable to get credentials for ID: " + err);
 				}
+
+				aws.config.update({
+					credentials: new aws.Credentials({
+						accessKeyId: data.Credentials.AccessKeyId,
+						secretAccessKey: data.Credentials.SecretKey,
+						sessionToken: data.Credentials.SessionToken
+					})
+				});
+
+				var sts = new aws.STS({region: identityPoolId.split(':')[0]});
+				sts.getCallerIdentity({}, function(err, data) {
+					if (err) {
+						console.log("[-] Error getting caller identity: " + e);
+					} else {
+						console.log("[+] Credentials recovered. This is your new identity:\n");
+						console.log(data);
+					}
+				})
 
 				success(data);
 			});
