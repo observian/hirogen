@@ -4,6 +4,8 @@
 
 var fs = require('fs');
 var os = require('os');
+var aws = require('aws-sdk');
+var colors = require('colors');
 var { spawnSync } = require('child_process');
 var cognito = require('./includes/cognito.js');
 
@@ -30,22 +32,36 @@ var workspace_template = {
 		clientid: "",
 		userpoolid: "",
 		identitypoolid: "",
-		pool_allows_registration: false
+		pool_allows_registration: false,
+		identity_allows_unauthenticated: false
 	},
 	providers: {
+		unauthenticated: {},
 		amazon: {},
 		cognito_idp: {},
 		google: {}
 	},
 	credentials: {
 		unauthenticated: {},
-		cognito_idp: {},
 		amazon: {},
+		cognito_idp: {},
+		google: {}
+	},
+	identities: {
+		unauthenticated: {},
+		amazon: {},
+		cognito_idp: {},
 		google: {}
 	}
 };
 
 var yargs = require('yargs')
+	.command("*", "RTFM is hard", (yargs) => {
+		yargs
+	}, (argv) => {
+		
+		console.log("[~] RTFM is hard".rainbow);
+	})
 	.command("use <workspace>", "Sets the active workspace", (yargs) => {
 		yargs
 		.usage('hirogen use <workspace>')
@@ -56,12 +72,12 @@ var yargs = require('yargs')
 			storage.last_workspace = workspace;
 			saveWorkspaces();
 
-			console.log("[+] switched to workspace [" + workspace + "]");
+			console.log(("[+] switched to workspace [" + workspace + "]").green);
 		} else {
-			console.log("[-] Error: Workspace [" + workspace + "] does not exist.");
+			console.log(("[-] Error: Workspace [" + workspace + "] does not exist.").red);
 
 			if (storage.last_workspace) {
-				console.log("[*] Continuing to use workspace [" + storage.last_workspace + "].");
+				console.log(("[*] Continuing to use workspace [" + storage.last_workspace + "].").blue);
 			}
 		}
 	})
@@ -71,31 +87,18 @@ var yargs = require('yargs')
 	}, (argv) => {
 		
 		if (storage.last_workspace == null) {
-			console.log("[-] No workspace selected");
+			console.log(("[-] No workspace selected").red);
 			return false;
 		} else {
 			var workspace = storage.last_workspace;
 		}
 
-		var creds = storage.workspaces[workspace].credentials[argv.provider.toString()];
-		if (!creds.hasOwnProperty('AccessKeyId') || !creds.hasOwnProperty('SecretKey') || !creds.hasOwnProperty('SessionToken')) {
-			console.log("[-] No credentials are available for the specified provider");
-			return false;
-		}
-
-		if (new Date(creds.Expiration) < new Date()) {
-			console.log("[-] Credentials are expired.");
-			return false;
-		}
-
-		process.env.AWS_ACCESS_KEY_ID = creds.AccessKeyId;
-		process.env.AWS_SECRET_ACCESS_KEY = creds.SecretKey;
-		process.env.AWS_SESSION_TOKEN = creds.SessionToken;
+		exportCredentials(workspace, argv.provider.toString());
 
 		var shell = spawnSync("aws", argv._.splice(1));
 
 		if (shell.error) {
-			console.log("[-] Error executing AWS CLI command: " + error)
+			console.log(("[-] Error executing AWS CLI command: " + error).red)
 		}
 
 		if (shell.stderr.toString() != "") {
@@ -104,7 +107,7 @@ var yargs = require('yargs')
 			console.log(shell.stdout.toString());
 		}
 
-		// console.log("[+] Spawned a shell as [" + workspace + "] [" + provider + "]");
+		// console.log(("[+] Spawned a shell as [" + workspace + "] [" + provider + "]"));
 	})
 	.command("export <provider>", "Show credentials in envvars syntax.", (yargs) => {
 		yargs
@@ -112,7 +115,7 @@ var yargs = require('yargs')
 	}, (argv) => {
 		
 		if (storage.last_workspace == null) {
-			console.log("[-] No workspace selected");
+			console.log(("[-] No workspace selected").red);
 			return false;
 		} else {
 			var workspace = storage.last_workspace;
@@ -120,18 +123,18 @@ var yargs = require('yargs')
 
 		var creds = storage.workspaces[workspace].credentials[argv.provider.toString()];
 		if (!creds.hasOwnProperty('AccessKeyId') || !creds.hasOwnProperty('SecretKey') || !creds.hasOwnProperty('SessionToken')) {
-			console.log("[-] No credentials are available for the specified provider");
+			console.log(("[-] No credentials are available for the specified provider").red);
 			return false;
 		}
 
 		if (new Date("2020-04-09T23:10:17.000Z") < new Date()) {
-			console.log("[-] Credentials are expired.");
+			console.log(("[-] Credentials are expired.").red);
 			return false;
 		}
 
-		console.log("export AWS_ACCESS_KEY_ID=" + creds.AccessKeyId);
-		console.log("export AWS_SECRET_ACCESS_KEY=" + creds.SecretKey);
-		console.log("export AWS_SESSION_TOKEN=" + creds.SessionToken);
+		console.log(("export AWS_ACCESS_KEY_ID=" + creds.AccessKeyId));
+		console.log(("export AWS_SECRET_ACCESS_KEY=" + creds.SecretKey));
+		console.log(("export AWS_SESSION_TOKEN=" + creds.SessionToken));
 	})
 	.command("check-clientid <appclientid> <userpoolid> [workspace]", "Checks the configuration of a provided Cognito AppClientId", (yargs) => {
 		yargs
@@ -159,13 +162,13 @@ var yargs = require('yargs')
 		}).then((status) => {
 			if (status.exists) {
 				if (status.canRegister) {
-					console.log("[+] This clientId allows direct registration!");
+					console.log(("[+] This clientId allows direct registration!").green);
 				} else {
-					console.log("[*] This clientId exists, but does not allow direct registration :(");
+					console.log(("[*] This clientId exists, but does not allow direct registration :(").blue);
 				}
 
-				if (argv.workspace) {
-					var workspace = argv.workspace.toString();
+				if (argv.workspace || storage.last_workspace) {
+					var workspace = (storage.last_workspace) ? storage.last_workspace : argv.workspace.toString();
 					if (!storage.workspaces.hasOwnProperty(workspace)) {
 						storage.workspaces[workspace] = workspace_template
 					}
@@ -180,11 +183,11 @@ var yargs = require('yargs')
 				}
 
 			} else {
-				console.log("[-] This clientId wasn't found. You may have the wrong user pool id");
+				console.log(("[-] This clientId wasn't found. You may have the wrong user pool id").red);
 			}
 
 		}).catch((e) => {
-			console.log("ClientId check failure: " + e);
+			console.log(("ClientId check failure: " + e));
 		});
 	})
 	.command("register-user <username> <password> [attributes]", "Register a new account with a Cognito User Pool", (yargs) => {
@@ -192,7 +195,7 @@ var yargs = require('yargs')
 		.usage('hirogen register-user <username> <password> [attributes]')
 	}, (argv) => {
 		if (storage.last_workspace == null) {
-			console.log("[-] No workspace selected");
+			console.log(("[-] No workspace selected").red);
 			return false;
 		} else {
 			var workspace = storage.last_workspace;
@@ -207,12 +210,12 @@ var yargs = require('yargs')
 		var ws_cognito = storage.workspaces[workspace].cognito;
 
 		if (ws_cognito.clientid == "" || ws_cognito.region == "") {
-			console.log("Workspace doesn't contain valid Cognito user pool information.\nFix this with 'check-clientid'");
+			console.log(("Workspace doesn't contain valid Cognito user pool information.\nFix this with 'check-clientid'"));
 			return false;
 		}
 
 		return cognito.signUp(ws_cognito.clientid, ws_cognito.region, argv.username, argv.password, attributes).then((data) => {
-			console.log("[+] Registration appears to have been successful. Subscriber: " + data.UserSub);
+			console.log(("[+] Registration appears to have been successful. Subscriber: " + data.UserSub).green);
 
 			storage.workspaces[workspace].cognito.user = {
 				name: argv.username.toString(),
@@ -224,12 +227,12 @@ var yargs = require('yargs')
 			saveWorkspaces();
 
 			if (!data.UserConfirmed) {
-				console.log("[*] You must validate your registration before you can log in. Use 'confirm-user' once you receive your code.");
+				console.log(("[*] You must validate your registration before you can log in. Use 'confirm-user' once you receive your code.").blue);
 			} else {
-				console.log("[+] You've been auto-verified! Use 'login-user' to get creds!");
+				console.log(("[+] You've been auto-verified! Use 'login-user' to get creds!").green);
 			}
 		}).catch((e) => {
-			console.log("Registration failed; " + e);
+			console.log(("Registration failed; " + e));
 		});
 	})
 	.command("confirm-user <confirmationcode>", "Verify a registered identity with a supplied confirmation code", (yargs) => {
@@ -238,7 +241,7 @@ var yargs = require('yargs')
 	}, (argv) => {
 		
 		if (storage.last_workspace == null) {
-			console.log("[-] No workspace selected");
+			console.log(("[-] No workspace selected").red);
 			return false;
 		} else {
 			var workspace = storage.last_workspace;
@@ -247,18 +250,28 @@ var yargs = require('yargs')
 		var ws_cognito = storage.workspaces[workspace].cognito;
 
 		return cognito.confirmSignUp(ws_cognito.clientid, ws_cognito.region, ws_cognito.user.name, argv.confirmationcode.toString()).then((data) => {
-			console.log("[+] Verification successful. You can now use 'login-user'");
+			console.log(("[+] Verification successful. You can now use 'login-user'").green);
 		}).catch((e) => {
-			console.log("[-] Verification failed; " + e);
+			console.log(("[-] Verification failed; " + e).red);
 		});
 	})
 	.command("login-user [authflow]", "Log into Cognito as the specified user", (yargs) => {
 		yargs
+		.option('username', {
+			alias: 'u',
+			type: 'string',
+			description: 'The username to log in with'
+		})
+		.option('password', {
+			alias: 'p',
+			type: 'string',
+			description: 'The password to log in with'
+		})
 		.usage('hirogen login-user [ USER_SRP_AUTH | USER_PASSWORD_AUTH ]')
 	}, (argv) => {
 
 		if (storage.last_workspace == null) {
-			console.log("[-] No workspace selected");
+			console.log(("[-] No workspace selected").red);
 			return false;
 		} else {
 			var workspace = storage.last_workspace;
@@ -270,15 +283,35 @@ var yargs = require('yargs')
 			var authflow = argv.authflow.toString();
 		} else {
 			if (ws_cognito.user.authflow == "") {
-				console.log("[-] No valid authflow available");
+				console.log(("[-] No valid authflow available").red);
 				return false;
 			}
 
 			var authflow = ws_cognito.user.authflow;
 		}
 
-		return cognito.initiateAuth(ws_cognito.clientid, ws_cognito.userpoolid, ws_cognito.user.name, ws_cognito.user.password, authflow).then((data) => {
-			console.log("[+] Login successful.");
+		if (!argv.username && ws_cognito.user.name == "") {
+			console.log("[-] No valid username provided.".red);
+			return false;
+		}
+
+		if (!argv.password && ws_cognito.user.password == "") {
+			console.log("[-] No valid password provided.".red);
+			return false;
+		}
+
+		if (ws_cognito.clientid == "" || ws_cognito.userpoolid == "") {
+			console.log("[-] clientid and userpoolid are required. Add them with check-clientid".red);
+			return false;
+		}
+
+		var username = (argv.username) ? argv.username.toString() : ws_cognito.user.name;
+		var password = (argv.password) ? argv.password.toString() : ws_cognito.user.password;
+
+		return cognito.initiateAuth(ws_cognito.clientid, ws_cognito.userpoolid, username, password, authflow).then((data) => {
+			console.log(("[+] Login successful.").green);
+			storage.workspaces[workspace].cognito.user.name = username;
+			storage.workspaces[workspace].cognito.user.password = password;
 			storage.workspaces[workspace].cognito.user.authflow = authflow;
 			storage.workspaces[workspace].providers.cognito_idp.clientid = ws_cognito.clientid;
 			storage.workspaces[workspace].providers.cognito_idp.access_token = data.AuthenticationResult.AccessToken;
@@ -286,11 +319,11 @@ var yargs = require('yargs')
 			storage.workspaces[workspace].providers.cognito_idp.refresh_token = data.AuthenticationResult.RefreshToken;
 			storage.workspaces[workspace].providers.cognito_idp.expires = Date.now() + (data.AuthenticationResult.expires * 1000);
 
+
 			saveWorkspaces();
 
 		}).catch((e) => {
-			console.log("[-] Login failed; " + e);
-			console.trace();
+			console.log(("[-] Login failed; " + e).red);
 		});
 	})
 	.command("login-provider <provider> <appclientid> [url]", "Generate a federated identity token with the supplied provider", (yargs) => {
@@ -299,14 +332,14 @@ var yargs = require('yargs')
 	}, async (argv) => {
 
 		if (storage.last_workspace == null) {
-			console.log("[-] No workspace selected. Tokens will not be saved.");
+			console.log(("[*] No workspace selected. Tokens will not be saved.").blue);
 			var workspace = false;
 		} else {
 			var workspace = storage.last_workspace;
 		}
 		
 		if (['google', 'amazon', 'cognito', 'facebook', 'twitter'].indexOf(argv.provider) < 0) {
-			console.log("Invalid provider specified.");
+			console.log(("Invalid provider specified."));
 			return false;
 		}
 
@@ -329,31 +362,46 @@ var yargs = require('yargs')
 						saveWorkspaces();
 					}
 				break;
+
+				default: 
+					console.log("[-] This provider is either unsupported or requires a URL".red);
+				break;
 			}
 		} else {
 			switch (argv.provider) {
 				case 'amazon':
+					if (url == null) {
+						console.log("[-] Login with Amazon requires a URL.".red);
+						return false
+					}
+
 					token = await cognito.getLWATokenAtPage(appclientid, url);
+					token = JSON.parse(token);
 
 					if (workspace) {
 						storage.workspaces[workspace].providers.amazon = {
 							client_id: appclientid,
 							url: url,
-							identity_token: token
+							identity_token: token.access_token,
+							expires: Date.now() + (token.expires_in * 1000)
 						}
 
 						saveWorkspaces();
 					}
 
 				break;
+
+				default: 
+					console.log("[-] This provider is either unsupported or requires that a URL not be supplied".red);
+				break;
 			}
 		}
 
 		if (token != null) {
 			if (workspace) {
-				console.log("[+] Got " + argv.provider + " token");
+				console.log(("[+] Got " + argv.provider + " token").green);
 			} else {
-				console.log("[+] Got " + argv.provider + " token: " + token);
+				console.log(("[+] Got " + argv.provider + " token: " + token).green);
 			}
 		}
 	})
@@ -363,15 +411,15 @@ var yargs = require('yargs')
 	}, async (argv) => {
 
 		if (storage.last_workspace == null) {
-			console.log("[-] No workspace selected");
+			console.log(("[-] No workspace selected").red);
 			return false;
 		} else {
 			var workspace = storage.last_workspace;
 		}
 
 		if (!argv.identitypoolid) {
-			if (storage.workspaces[workspace].cognito.identitypoolid == "") {
-				console.log("[-] Workspace contains no valid identitypoolid. Specify one.");
+			if (!storage.workspaces[workspace].cognito.hasOwnProperty('identitypoolid') || storage.workspaces[workspace].cognito.identitypoolid == "") {
+				console.log(("[-] Workspace contains no valid identitypoolid. Specify one.").red);
 				return false;
 			}
 
@@ -381,7 +429,7 @@ var yargs = require('yargs')
 		}
 		
 		if (['google', 'amazon', 'cognito_idp', 'facebook', 'twitter'].indexOf(argv.provider) < 0) {
-			console.log("Invalid provider specified.");
+			console.log(("Invalid provider specified."));
 			return false;
 		}
 
@@ -397,7 +445,7 @@ var yargs = require('yargs')
 
 		if (provider == "cognito_idp") {
 			if (storage.workspaces[workspace].cognito.userpoolid == "" || storage.workspaces[workspace].cognito.region == "") {
-				console.log("[-] Workspace doesn't contain a valid userpoolid or region. Fix this with 'check-clientid'.");
+				console.log(("[-] Workspace doesn't contain a valid userpoolid or region. Fix this with 'check-clientid'.").red);
 				return false;
 			}
 
@@ -415,14 +463,108 @@ var yargs = require('yargs')
 		}
 
 		cognito.getCredentialsForIdentity(identitypoolid, provider_id, token).then((data) => {
-			storage.workspaces[workspace].cognito.identitypoolid = data.IdentityId;
-			storage.workspaces[workspace].providers[provider].identityId = data.Credentials;
-			storage.workspaces[workspace].credentials[provider] = data.Credentials;
+			storage.workspaces[workspace].cognito.identitypoolid = identitypoolid;
+			storage.workspaces[workspace].identities[provider] = data.identity;
+			storage.workspaces[workspace].credentials[provider] = data.credentials;
+
+			console.log(("[+] Credentials received. Your new identity is:\n".green));
+			console.log(data.identity);
+			console.log("");
+
 			saveWorkspaces();
 
 		}).catch((e) => {
-			console.log("[-] Error retrieving credentials: " + e);
+			console.log(("[-] Error retrieving credentials: " + e).red);
 		});
+	})
+	.command("get-unauthenticated [identitypoolid] [workspace]", "Retrieves Unauthenticated AWS Cognito credentials", (yargs) => {
+		yargs
+		.usage("hirogen get-unauth [identitypoolid]")
+	}, async (argv) => {
+
+		if (argv.workspace || storage.last_workspace) {
+			var workspace = (storage.last_workspace) ? storage.last_workspace : argv.workspace.toString();
+			if (!storage.workspaces.hasOwnProperty(workspace)) {
+				storage.workspaces[workspace] = workspace_template
+			}
+
+			storage.last_workspace = workspace;
+			saveWorkspaces();
+		}
+
+		if (!argv.identitypoolid) {
+			if (!workspace || storage.workspaces[workspace].cognito.identitypoolid == "") {
+				console.log(("[-] Workspace contains no valid identitypoolid. Specify one.").red);
+				return false;
+			}
+
+			var identitypoolid = storage.workspaces[workspace].cognito.identitypoolid
+		} else {
+			var identitypoolid = argv.identitypoolid.toString();
+		}	
+
+		cognito.getCredentialsForIdentity(identitypoolid, null, null).then((data) => {
+			if (workspace) {
+
+				storage.workspaces[workspace].cognito.identitypoolid = identitypoolid;
+				storage.workspaces[workspace].cognito.identity_allows_unauthenticated = true;
+
+				storage.workspaces[workspace].identities['unauthenticated'] = data.identity;
+				storage.workspaces[workspace].credentials['unauthenticated'] = data.credentials;
+
+				console.log(("[+] Credentials received. Your new identity is:\n".green))
+				console.log(data.identity);
+				console.log("");
+
+				saveWorkspaces();
+			}
+
+		}).catch((e) => {
+			var parts = e.split(': ');
+			switch (parts[1]) {
+				case "ResourceNotFoundException":
+					console.log(("[-] " + parts[2]).red)
+				break;
+
+				case "NotAuthorizedException":
+					console.log(("[*] Identity Pool exists, but unauthenticated credentials are not supported.").blue);
+
+					storage.workspaces[workspace].cognito.identitypoolid = identitypoolid;
+					storage.workspaces[workspace].cognito.identity_allows_unauthenticated = false;
+					saveWorkspaces();
+				break;
+
+				default:
+					console.log(("[-] Unknown error: " + e).red);
+				break;
+			}
+		});
+	})
+	.command("test-credentials <provider>", "Performs a rudimentary permissiosn check with the credentials from a given provider.", (yargs) => {
+		yargs
+		.usage("hirogen test-creds <provider>")
+	}, async (argv) => {
+
+		if (storage.last_workspace == null) {
+			console.log(("[-] No workspace selected").red);
+			return false;
+		} else {
+			var workspace = storage.last_workspace;
+		}
+
+		exportCredentials(workspace, argv.provider.toString());
+
+		testCredentials().then((results) => {
+			Object.keys(results).sort().forEach(function(e) {
+				if (results[e] == true) {
+					console.log(("[+] " + e).green);
+				} else {
+					console.log(("[-] " + e).red);
+				}
+			});
+		})
+
+
 	})
 	.option("workspace", {
 		alias: 'w',
@@ -451,7 +593,7 @@ function handleSignUpResponse(response) {
 		break;
 
 		default:
-			console.log("Unknown response from ClientId SignUp: " + response);
+			console.log(("Unknown response from ClientId SignUp: " + response));
 			return false;
 		break;
 	}
@@ -475,4 +617,187 @@ function parseAttributes(attributes) {
 	});
 
 	return response;
+}
+
+function exportCredentials(workspace, provider) {
+	var creds = storage.workspaces[workspace].credentials[provider];
+	if (!creds.hasOwnProperty('AccessKeyId') || !creds.hasOwnProperty('SecretKey') || !creds.hasOwnProperty('SessionToken')) {
+		console.log(("[-] No credentials are available for the specified provider").red);
+		return false;
+	}
+
+	if (new Date(creds.Expiration) < new Date()) {
+		console.log(("[-] Credentials are expired.").red);
+		return false;
+	}
+
+	process.env.AWS_ACCESS_KEY_ID = creds.AccessKeyId;
+	process.env.AWS_SECRET_ACCESS_KEY = creds.SecretKey;
+	process.env.AWS_SESSION_TOKEN = creds.SessionToken;
+
+	aws.config.update({
+		credentials: new aws.Credentials({
+			accessKeyId: creds.AccessKeyId,
+			secretAccessKey: creds.SecretKey,
+			sessionToken: creds.SessionToken
+		})
+	});
+
+	return true;
+}
+
+function testCredentials() {
+	var promises = [];
+	var results = {};
+
+	return new Promise((test_results, derp) => {
+
+		/*--	S3 Tests 	--*/
+
+		var s3 = new aws.S3({region: "us-west-2"});
+		promises.push(new Promise((success, failure) => {
+			var test_name = "s3_ArbitraryRead";
+
+			s3.getObject({
+				Bucket: "hirogen-crossaccount-read-test",
+				Key: "success.txt"
+			}, function(err, data) {
+				if (err) {
+					results[test_name] = false;
+					return success(false);
+				}
+
+				results[test_name] = true;
+				return success(true)
+			});
+		}));
+
+		promises.push(new Promise((success, failure) => {
+			var test_name = "s3_ArbitraryListObjects";
+
+			s3.listObjects({
+				Bucket: "hirogen-crossaccount-read-test",
+				MaxKeys: 2
+			}, function(err, data) {
+				if (err) {
+					results[test_name] = false;
+					return success(false);
+				}
+
+				results[test_name] = true;
+				return success(true)
+			});
+		}));
+
+		promises.push(new Promise((success, failure) => {
+			var test_name = "s3_ListBuckets";
+
+			s3.listBuckets({}, function(err, data) {
+				if (err) {
+					results[test_name] = false;
+					return success(false);
+				}
+
+				results[test_name] = true;
+				return success(true)
+			});
+		}));
+
+
+		/*-- DDB Tests --*/
+
+		var ddb = new aws.DynamoDB({region: "us-west-2"});
+		promises.push(new Promise((success, failure) => {
+			var test_name = "ddb_ListTables";
+
+			ddb.listTables({
+				Limit: 1
+			}, function(err, data) {
+				if (err) {
+					results[test_name] = false;
+					return success(false);
+				}
+
+				results[test_name] = true;
+				return success(true)
+			});
+		}));
+
+
+		/*-- IAM Tests --*/
+
+		var iam = new aws.IAM({region: "us-west-2"});
+		promises.push(new Promise((success, failure) => {
+			var test_name = "iam_ListUsers";
+
+			iam.listUsers({
+				MaxItems: 1
+			}, function(err, data) {
+				if (err) {
+					results[test_name] = false;
+					return success(false);
+				}
+
+				results[test_name] = true;
+				return success(true)
+			});
+		}));
+
+		promises.push(new Promise((success, failure) => {
+			var test_name = "iam_ListRoles";
+
+			iam.listRoles({
+				MaxItems: 1
+			}, function(err, data) {
+				if (err) {
+					results[test_name] = false;
+					return success(false);
+				}
+
+				results[test_name] = true;
+				return success(true)
+			});
+		}));
+
+		
+		/*-- EC2 Tests --*/
+
+		var ec2 = new aws.EC2({region: "us-west-2"});
+		promises.push(new Promise((success, failure) => {
+			var test_name = "ec2_DescribeInstances";
+
+			ec2.describeInstances({
+				MaxResults: 1
+			}, function(err, data) {
+				if (err) {
+					results[test_name] = false;
+					return success(false);
+				}
+
+				results[test_name] = true;
+				return success(true)
+			});
+		}));
+
+		promises.push(new Promise((success, failure) => {
+			var test_name = "ec2_DescribeVPCEndpoints";
+
+			ec2.describeVpcEndpoints({
+				MaxResults: 1
+			}, function(err, data) {
+				if (err) {
+					results[test_name] = false;
+					return success(false);
+				}
+
+				results[test_name] = true;
+				return success(true)
+			});
+		}));
+
+		Promise.all(promises).then(() => {
+			return test_results(results);
+		})
+	});
+
 }

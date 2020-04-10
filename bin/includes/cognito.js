@@ -146,26 +146,43 @@ expose.initiateAuth = function(clientId, userpoolid, username, password, authflo
 
 expose.getCredentialsForIdentity = async function(identityPoolId, provider, token) {
 	return new Promise((success, failure) => {
+
 		var cognito = new aws.CognitoIdentity({region: identityPoolId.split(':')[0]});
 
 		var region = identityPoolId.split(':')[0];
 
-		cognito.getId({
-			IdentityPoolId: identityPoolId,
-			Logins: {
-				[provider]: token
-			}
-		}, function(err, data) {
+		if (token == null && provider == null) {
+			var params = {
+				IdentityPoolId: identityPoolId
+			};
+		} else {
+			var params = {
+				IdentityPoolId: identityPoolId,
+				Logins: {
+					[provider]: token
+				}
+			};
+		}
+
+		cognito.getId(params, function(err, data) {
 			if (err) {
 				return failure("Unable to get Identity ID: " + err);
 			}
 
-			cognito.getCredentialsForIdentity({
-				IdentityId: data.IdentityId,
-				Logins: {
-					[provider]: token
-				}
-			}, function(err, data) {
+			if (token == null && provider == null) {
+				var params = {
+					IdentityId: data.IdentityId,
+				};
+			} else {
+				var params = {
+					IdentityId: data.IdentityId,
+					Logins: {
+						[provider]: token
+					}
+				};
+			}
+
+			cognito.getCredentialsForIdentity(params, function(err, data) {
 				if (err) {
 					return failure("Unable to get credentials for ID: " + err);
 				}
@@ -179,16 +196,17 @@ expose.getCredentialsForIdentity = async function(identityPoolId, provider, toke
 				});
 
 				var sts = new aws.STS({region: identityPoolId.split(':')[0]});
-				sts.getCallerIdentity({}, function(err, data) {
+				sts.getCallerIdentity({}, function(err, identity) {
 					if (err) {
 						console.log("[-] Error getting caller identity: " + e);
-					} else {
-						console.log("[+] Credentials recovered. This is your new identity:\n");
-						console.log(data);
+						return false;
 					}
-				})
 
-				success(data);
+					delete identity.ResponseMetadata;
+					identity.IdentityId = data.IdentityId;
+
+					success({identity: identity, credentials: data.Credentials});
+				})
 			});
 		});
 	});
@@ -205,14 +223,17 @@ expose.getGoogleTokenForClient = async function(client_id) {
 	let pages = await browser.pages();
 	let page = pages[0];
 
-	await page.goto([
+	var url = [
 		'https://accounts.google.com/o/oauth2/auth?',
 		'redirect_uri=storagerelay%3A%2F%2Fhttp%2Flocalhost%3Fid%3Dauth',
 		'&response_type=permission%20id_token',
 		'&scope=email%20profile%20openid&openid.realm=',
 		'&client_id=' + client_id,
 		'&ss_domain=http%3A%2F%2Flocalhost&fetch_basic_profile=true&gsiwebsdk=2'
-	].join(""));
+	].join("");
+
+	console.log(url);
+	await page.goto(url);
 
 	if (fs.existsSync('google-cookies.json')) {
 		await page.setCookie(...JSON.parse(fs.readFileSync('google-cookies.json')));
@@ -221,7 +242,7 @@ expose.getGoogleTokenForClient = async function(client_id) {
 	var token = "";
 	await Promise.race([
 		page.waitForSelector('form[data-credential-response]'),
-		page.waitForFunction('document.getElementsByTagName("script")[1].innerHTML.indexOf("id_token") > 0')
+		page.waitForFunction('document.getElementsByTagName("script").length > 0 && document.getElementsByTagName("script")[1].innerHTML.indexOf("id_token") > 0')
 
 	]).then(async () => {
 		token = await page.evaluate(async () => {
@@ -233,10 +254,10 @@ expose.getGoogleTokenForClient = async function(client_id) {
 				token = document.getElementsByTagName('form')[0].getAttribute('data-credential-response').split('id_token\\" : \\"')[1].split('\\"')[0];
 			}
 
-			fs.writeFileSync('google-cookies.json', JSON.stringify(await page.cookies()));
-
 			return Promise.resolve(token);
 		});
+
+		fs.writeFileSync('google-cookies.json', JSON.stringify(await page.cookies()));
 	});
 
 	await browser.close();
@@ -258,7 +279,7 @@ expose.getLWATokenAtPage = async function(client_id, url) {
 	if (fs.existsSync('lwa-cookies.json')) {
 		await page.setCookie(...JSON.parse(fs.readFileSync('lwa-cookies.json')));
 	}
-
+	
 	var token = "";
 	token = await page.evaluate(async (client_id) => {
 		return new Promise((success, failure) => {
