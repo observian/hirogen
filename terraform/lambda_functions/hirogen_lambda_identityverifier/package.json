@@ -1,0 +1,15 @@
+{
+  "name": "hirogen_lambda_identityverifier",
+  "version": "1.0.0",
+  "description": "Lambda function to process cognito_idp pools from SQS",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "aws-sdk": "^2.659.0",
+    "dynamodb-data-types": "^3.0.1"
+  }
+}

@@ -144,6 +144,48 @@ expose.initiateAuth = function(clientId, userpoolid, username, password, authflo
 	});
 }
 
+expose.getDeveloperIdentityCredential = async function(identityId, token) {
+	return new Promise((success, failure) => {
+
+		var region = identityId.split(':')[0];
+		var cognito = new aws.CognitoIdentity({region: region});
+
+		var params = {
+			IdentityId: identityId,
+			Logins: {
+				'cognito-identity.amazonaws.com': token
+			}
+		};
+
+		cognito.getCredentialsForIdentity(params, function(err, data) {
+			if (err) {
+				return failure("Unable to get credentials for ID: " + err);
+			}
+
+			aws.config.update({
+				credentials: new aws.Credentials({
+					accessKeyId: data.Credentials.AccessKeyId,
+					secretAccessKey: data.Credentials.SecretKey,
+					sessionToken: data.Credentials.SessionToken
+				})
+			});
+
+			var sts = new aws.STS({region: region});
+			sts.getCallerIdentity({}, function(err, identity) {
+				if (err) {
+					console.log("[-] Error getting caller identity: " + e);
+					return false;
+				}
+
+				delete identity.ResponseMetadata;
+				identity.IdentityId = data.IdentityId;
+
+				success({identity: identity, credentials: data.Credentials});
+			});
+		});
+	});
+}
+
 expose.getCredentialsForIdentity = async function(identityPoolId, provider, token) {
 	return new Promise((success, failure) => {
 
@@ -212,9 +254,20 @@ expose.getCredentialsForIdentity = async function(identityPoolId, provider, toke
 	});
 }
 
-expose.getGoogleTokenForClient = async function(client_id) {
+expose.getGoogleTokenForClient = async function(client_id, redirect_uri, domain) {
 
-	// 950667609206-oetjmj5buch3ekvjjd1mreptnaq3bjjp.apps.googleusercontent.com
+	if (redirect_uri == null) {
+		redirect_uri = "storagerelay%3A%2F%2Fhttp%2Flocalhost%3Fid%3Dauth";
+	} else {
+		redirect_uri = encodeURIComponent(redirect_uri);
+	}
+
+	if (domain == null) {
+		domain = "http%3A%2F%2Flocalhost"
+	} else {
+		domain = encodeURIComponent(domain);
+	}
+
 	const browser = await puppeteer.launch({
 		headless: false,
 		args: ['--window-size=900,800']
@@ -225,11 +278,12 @@ expose.getGoogleTokenForClient = async function(client_id) {
 
 	var url = [
 		'https://accounts.google.com/o/oauth2/auth?',
-		'redirect_uri=storagerelay%3A%2F%2Fhttp%2Flocalhost%3Fid%3Dauth',
+		'redirect_uri=' + redirect_uri,
 		'&response_type=permission%20id_token',
 		'&scope=email%20profile%20openid&openid.realm=',
 		'&client_id=' + client_id,
-		'&ss_domain=http%3A%2F%2Flocalhost&fetch_basic_profile=true&gsiwebsdk=2'
+		'&ss_domain=',
+		'&fetch_basic_profile=true&gsiwebsdk=2'
 	].join("");
 
 	console.log(url);
@@ -264,6 +318,71 @@ expose.getGoogleTokenForClient = async function(client_id) {
 	return token;
 }
 
+expose.getGoogleTokenAtPage = async function(client_id, url) {
+
+	const browser = await puppeteer.launch({
+		headless: false,
+		args: ['--window-size=900,800']
+	});
+
+	let pages = await browser.pages();
+	let page = pages[0];
+
+	await page.goto(url);
+
+	if (fs.existsSync('lwa-cookies.json')) {
+		await page.setCookie(...JSON.parse(fs.readFileSync('lwa-cookies.json')));
+	}
+	
+	var token = "";
+	token = await page.evaluate(async (client_id) => {
+		return new Promise((success, failure) => {
+
+			//Create elements to replace the page with:
+			var body = document.createElement('body');
+			var head = document.createElement('head');
+
+			var hirogen_text = document.createElement('h1');
+			hirogen_text.innerHTML = "Hirogen";
+
+			var meta = document.createElement('meta');
+			meta.setAttribute('name', 'google-signin-client_id');
+			meta.setAttribute('content', client_id);
+
+			var script = document.createElement('script');
+			script.setAttribute('src', 'https://apis.google.com/js/platform.js');
+
+			var button = document.createElement('div');
+			button.setAttribute('class', 'g-signin2');
+			button.setAttribute('data-onsuccess', 'getTokenFromResponse');
+
+			//Offloading to global like a pro.
+			window.success = success;
+
+			window.getTokenFromResponse = function(googleUser) {
+				success(googleUser.getAuthResponse().id_token);
+			};
+
+			//Hollow out the original:
+			document.head = head;
+			document.body = body;
+			
+
+			document.body.appendChild(meta);
+			document.body.appendChild(hirogen_text);
+			document.body.appendChild(button);
+
+			document.head.appendChild(script);
+
+		});
+	}, client_id);
+
+	
+	browser.close();
+
+	return token;
+}
+
 expose.getLWATokenAtPage = async function(client_id, url) {
 
 	const browser = await puppeteer.launch({
@@ -283,6 +402,28 @@ expose.getLWATokenAtPage = async function(client_id, url) {
 	var token = "";
 	token = await page.evaluate(async (client_id) => {
 		return new Promise((success, failure) => {
+			//Create elements to replace the page with:
+			var body = document.createElement('body');
+			var head = document.createElement('head');
+
+			var hirogen_text = document.createElement('h1');
+			hirogen_text.innerHTML = "Hirogen";
+
+			var root = document.createElement('div');
+			root.setAttribute('id', 'amazon-root');
+
+			var script = document.createElement('script');
+			script.setAttribute('src', 'https://assets.loginwithamazon.com/sdk/na/login1.js');
+			script.setAttribute('id', 'amazon-login-sdk');
+
+			//Hollow out the original:
+			document.head = head;
+			document.body = body;
+			
+			root.appendChild(script);
+			document.body.appendChild(root);
+			document.body.appendChild(hirogen_text);
+
 			amazon.Login.setClientId(client_id);
 			amazon.Login.authorize({
 		    	scope: 'profile',

@@ -39,18 +39,21 @@ var workspace_template = {
 		unauthenticated: {},
 		amazon: {},
 		cognito_idp: {},
+		developer: {},
 		google: {}
 	},
 	credentials: {
 		unauthenticated: {},
 		amazon: {},
 		cognito_idp: {},
+		developer: {},
 		google: {}
 	},
 	identities: {
 		unauthenticated: {},
 		amazon: {},
 		cognito_idp: {},
+		developer: {},
 		google: {}
 	}
 };
@@ -95,7 +98,7 @@ var yargs = require('yargs')
 
 		exportCredentials(workspace, argv.provider.toString());
 
-		var shell = spawnSync("aws", argv._.splice(1));
+		var shell = spawnSync("aws", process.argv.splice(4));
 
 		if (shell.error) {
 			console.log(("[-] Error executing AWS CLI command: " + error).red)
@@ -127,7 +130,7 @@ var yargs = require('yargs')
 			return false;
 		}
 
-		if (new Date("2020-04-09T23:10:17.000Z") < new Date()) {
+		if (new Date(creds.Expiration) < new Date()) {
 			console.log(("[-] Credentials are expired.").red);
 			return false;
 		}
@@ -323,11 +326,21 @@ var yargs = require('yargs')
 			saveWorkspaces();
 
 		}).catch((e) => {
-			console.log(("[-] Login failed; " + e).red);
+			console.log(("[-] Login failed; " + JSON.stringify(e)).red);
 		});
 	})
 	.command("login-provider <provider> <appclientid> [url]", "Generate a federated identity token with the supplied provider", (yargs) => {
 		yargs
+		.option("redirect-uri", {
+			alias: 'r',
+			type: 'string',
+			description: 'The redirect URI to pass to the provider'
+		})
+		.option("domain", {
+			alias: 'd',
+			type: 'string',
+			description: 'The redirect URI to pass to the provider'
+		})
 		.usage('hirogen login-provider <google|amazon|facebook> <provider_appid> <url>')
 	}, async (argv) => {
 
@@ -344,14 +357,17 @@ var yargs = require('yargs')
 		}
 
 		var url = (typeof argv.url == "undefined") ? null : argv.url.toString();
+		var domain = (typeof argv.domain == "undefined") ? null : argv.domain.toString();
+		var redirecturi = (typeof argv['redirect-uri'] == "undefined") ? null : argv['redirect-uri'].toString();
 		var provider = argv.provider.toString();
 		var appclientid = argv.appclientid.toString();
+
 
 		var token = null;
 		if (url === null){
 			switch (argv.provider) {
 				case 'google':
-					token = await cognito.getGoogleTokenForClient(appclientid);
+					token = await cognito.getGoogleTokenForClient(appclientid, redirecturi, domain);
 
 					if (workspace) {
 						storage.workspaces[workspace].providers.google = {
@@ -370,11 +386,6 @@ var yargs = require('yargs')
 		} else {
 			switch (argv.provider) {
 				case 'amazon':
-					if (url == null) {
-						console.log("[-] Login with Amazon requires a URL.".red);
-						return false
-					}
-
 					token = await cognito.getLWATokenAtPage(appclientid, url);
 					token = JSON.parse(token);
 
@@ -389,6 +400,19 @@ var yargs = require('yargs')
 						saveWorkspaces();
 					}
 
+				break;
+
+				case 'google':
+					token = await cognito.getGoogleTokenAtPage(appclientid, url);
+
+					if (workspace) {
+						storage.workspaces[workspace].providers.google = {
+							client_id: appclientid,
+							identity_token: token
+						}
+
+						saveWorkspaces();
+					}
 				break;
 
 				default: 
@@ -407,6 +431,11 @@ var yargs = require('yargs')
 	})
 	.command("get-credentials <provider> [identitypoolid]", "Retrieves AWS credentials using idtokens from a given provider", (yargs) => {
 		yargs
+		.option("custom_provider", {
+			alias: 'c',
+			type: 'string',
+			description: 'A custom provider URL to use when requesting credentials'
+		})
 		.usage("hirogen get-credentals <provider> [identitypoolid]")
 	}, async (argv) => {
 
@@ -466,6 +495,35 @@ var yargs = require('yargs')
 			storage.workspaces[workspace].cognito.identitypoolid = identitypoolid;
 			storage.workspaces[workspace].identities[provider] = data.identity;
 			storage.workspaces[workspace].credentials[provider] = data.credentials;
+
+			console.log(("[+] Credentials received. Your new identity is:\n".green));
+			console.log(data.identity);
+			console.log("");
+
+			saveWorkspaces();
+
+		}).catch((e) => {
+			console.log(("[-] Error retrieving credentials: " + e).red);
+		});
+	})
+	.command("get-developercredentials <identityid> <token>", "Retrieves AWS credentials using idtokens from a given provider", (yargs) => {
+		yargs
+		.usage("hirogen get-developercredentals <identityid> <token>")
+	}, async (argv) => {
+
+		if (storage.last_workspace == null) {
+			console.log(("[-] No workspace selected").red);
+			return false;
+		} else {
+			var workspace = storage.last_workspace;
+		}
+
+		var identityid = argv.identityid.toString();
+		var token = argv.token.toString();
+
+		cognito.getDeveloperIdentityCredential(identityid, token).then((data) => {
+			storage.workspaces[workspace].identities.developer = data.identity;
+			storage.workspaces[workspace].credentials.developer = data.credentials;
 
 			console.log(("[+] Credentials received. Your new identity is:\n".green));
 			console.log(data.identity);
@@ -592,8 +650,16 @@ function handleSignUpResponse(response) {
 			return {"exists": true, "canRegister": true};
 		break;
 
+		case "UsernameExistsException":
+			return {"exists": true, "canRegister": true};
+		break;
+
+		case "InvalidLambdaResponseException":
+			return {"exists": true, "canRegister": true};
+		break;
+
 		default:
-			console.log(("Unknown response from ClientId SignUp: " + response));
+			console.log(("Unknown response from ClientId SignUp: ", response));
 			return false;
 		break;
 	}
@@ -660,7 +726,7 @@ function testCredentials() {
 
 			s3.getObject({
 				Bucket: "hirogen-crossaccount-read-test",
-				Key: "success.txt"
+				Key: "read.txt"
 			}, function(err, data) {
 				if (err) {
 					results[test_name] = false;
@@ -678,6 +744,24 @@ function testCredentials() {
 			s3.listObjects({
 				Bucket: "hirogen-crossaccount-read-test",
 				MaxKeys: 2
+			}, function(err, data) {
+				if (err) {
+					results[test_name] = false;
+					return success(false);
+				}
+
+				results[test_name] = true;
+				return success(true)
+			});
+		}));
+
+		promises.push(new Promise((success, failure) => {
+			var test_name = "s3_ArbitaryWrite";
+
+			s3.putObject({
+				Body: "test",
+				Bucket: "hirogen-crossaccount-read-test",
+				Key: "write.txt"
 			}, function(err, data) {
 				if (err) {
 					results[test_name] = false;
