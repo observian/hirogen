@@ -290,22 +290,22 @@ expose.getGoogleTokenForClient = async function(client_id, redirect_uri, domain)
 	await page.goto(url);
 
 	if (fs.existsSync('google-cookies.json')) {
-		await page.setCookie(...JSON.parse(fs.readFileSync('google-cookies.json')));
+		// await page.setCookie(...JSON.parse(fs.readFileSync('google-cookies.json')));
 	}
 
 	var token = "";
 	await Promise.race([
-		page.waitForSelector('form[data-credential-response]'),
-		page.waitForFunction('document.getElementsByTagName("script").length > 0 && document.getElementsByTagName("script")[1].innerHTML.indexOf("id_token") > 0')
+		page.waitForSelector('[data-credential-response]', { timeout: 60000 }),
+		page.waitForFunction('document.getElementsByTagName("script").length > 0 && document.getElementsByTagName("script")[1].innerHTML.indexOf("id_token") > 0', { timeout: 60000 })
 
 	]).then(async () => {
 		token = await page.evaluate(async () => {
 			var token = null;
 
-			if (document.querySelectorAll('form[data-credential-response]').length == 0) {
+			if (document.querySelectorAll('[data-credential-response]').length == 0) {
 				token = document.getElementsByTagName("script")[1].innerHTML.split('id_token\" : \"')[1].split('\"')[0];
 			} else {
-				token = document.getElementsByTagName('form')[0].getAttribute('data-credential-response').split('id_token\\" : \\"')[1].split('\\"')[0];
+				token = document.querySelectorAll('[data-credential-response]')[0].getAttribute('data-credential-response').split('id_token\\" : \\"')[1].split('\\"')[0];
 			}
 
 			return Promise.resolve(token);
@@ -330,8 +330,8 @@ expose.getGoogleTokenAtPage = async function(client_id, url) {
 
 	await page.goto(url);
 
-	if (fs.existsSync('lwa-cookies.json')) {
-		await page.setCookie(...JSON.parse(fs.readFileSync('lwa-cookies.json')));
+	if (fs.existsSync('google-cookies.json')) {
+		// await page.setCookie(...JSON.parse(fs.readFileSync('google-cookies.json')));
 	}
 	
 	var token = "";
@@ -377,7 +377,7 @@ expose.getGoogleTokenAtPage = async function(client_id, url) {
 		});
 	}, client_id);
 
-	
+	fs.writeFileSync('google-cookies.json', JSON.stringify(await page.cookies()));
 	browser.close();
 
 	return token;

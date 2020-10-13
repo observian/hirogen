@@ -1,6 +1,2 @@
 *-cookies.json
-node_modules*
-*terraform.tfstate*
-*.auto.tfvars
-*/zip_files/*
-**.terraform**
+**node_modules*
